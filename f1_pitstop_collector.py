@@ -60,6 +60,39 @@ def nearest_weather(weather_df: pd.DataFrame, pit_time) -> dict:
     }
 
 
+# fastf1 track status codes (a lap's TrackStatus string can contain multiple)
+# '1'=Green  '2'=Yellow  '4'=SafetyCar  '5'=RedFlag  '6'=VSC  '7'=VSCEnding
+def parse_track_status(status_str) -> dict:
+    """Return boolean flag columns for each track status code."""
+    if pd.isna(status_str) or str(status_str).strip() == "":
+        s = ""
+    else:
+        s = str(status_str)
+    return {
+        "TrackStatus":          s if s else "Unknown",
+        "GreenFlag":            "1" in s,
+        "YellowFlag":           "2" in s,
+        "SafetyCar":            "4" in s,
+        "RedFlag":              "5" in s,
+        "VirtualSafetyCar":     "6" in s or "7" in s,
+    }
+
+
+def get_track_condition(rainfall: bool, compound: str | None) -> str:
+    """
+    Derive surface condition from rainfall and the compound being used.
+    Compound gives a ground-truth signal that weather sensors can lag.
+    """
+    c = (compound or "").upper()
+    if c == "WET":
+        return "Wet"
+    if c == "INTERMEDIATE":
+        return "Intermediate"
+    if rainfall:
+        return "Damp"
+    return "Dry"
+
+
 def extract_pitstops(session, year: int, event_name: str, round_number: int) -> list[dict]:
     """
     Return one record per pit stop, with:
@@ -102,7 +135,10 @@ def extract_pitstops(session, year: int, event_name: str, round_number: int) -> 
         pit_out = out_time_lookup.get((driver, lap_number + 1))
         pit_out_s = round(pit_out.total_seconds(), 3) if pit_out is not None else None
 
-        weather = nearest_weather(weather_df, lap["PitInTime"])
+        weather       = nearest_weather(weather_df, lap["PitInTime"])
+        track_status  = parse_track_status(lap.get("TrackStatus"))
+        compound      = lap.get("Compound", None)
+        track_cond    = get_track_condition(weather.get("Rainfall", False), compound)
 
         records.append({
             "Year":              year,
@@ -112,13 +148,15 @@ def extract_pitstops(session, year: int, event_name: str, round_number: int) -> 
             "Team":              lap.get("Team", None),
             "LapNumber":         lap_number,
             "Stint":             int(lap["Stint"]),
-            "Compound":          lap.get("Compound", None),
+            "Compound":          compound,
             "TyreLife":          int(lap["TyreLife"]) if pd.notna(lap["TyreLife"]) else None,
             "PitInTime_s":       round(lap["PitInTime"].total_seconds(), 3),
             "PitOutTime_s":      pit_out_s,
             "PositionAtPit":     position_at_pit,
             "FinalPosition":     final_pos,
             **weather,
+            **track_status,
+            "TrackCondition":    track_cond,
         })
 
     return records
