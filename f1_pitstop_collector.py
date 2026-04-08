@@ -32,14 +32,44 @@ def get_final_positions(session) -> dict[str, int | str]:
     return pos_map
 
 
+def get_weather_lookup(session) -> pd.DataFrame:
+    """
+    Return the weather DataFrame sorted by Time, ready for nearest-time lookup.
+    Weather columns: AirTemp, TrackTemp, Humidity, Pressure, WindSpeed,
+                     WindDirection, Rainfall.
+    """
+    weather = session.weather_data.copy()
+    weather = weather.sort_values("Time").reset_index(drop=True)
+    return weather
+
+
+def nearest_weather(weather_df: pd.DataFrame, pit_time) -> dict:
+    """Return the weather row closest in time to pit_time (a timedelta)."""
+    if weather_df.empty:
+        return {}
+    idx = (weather_df["Time"] - pit_time).abs().idxmin()
+    row = weather_df.loc[idx]
+    return {
+        "AirTemp_C":       round(float(row["AirTemp"]), 1),
+        "TrackTemp_C":     round(float(row["TrackTemp"]), 1),
+        "Humidity_pct":    round(float(row["Humidity"]), 1),
+        "Pressure_mbar":   round(float(row["Pressure"]), 1),
+        "WindSpeed_ms":    round(float(row["WindSpeed"]), 1),
+        "WindDirection":   int(row["WindDirection"]),
+        "Rainfall":        bool(row["Rainfall"]),
+    }
+
+
 def extract_pitstops(session, year: int, event_name: str, round_number: int) -> list[dict]:
     """
     Return one record per pit stop, with:
       - driver position at the pit-in lap
       - driver's final classified race position
+      - weather conditions at the moment of pit entry
     """
     laps = session.laps
     final_positions = get_final_positions(session)
+    weather_df = get_weather_lookup(session)
 
     # A pit stop lap is one where PitInTime is recorded (car entered pit lane).
     # PitOutTime is stored on the *following* lap (the out lap), so we index
@@ -72,6 +102,8 @@ def extract_pitstops(session, year: int, event_name: str, round_number: int) -> 
         pit_out = out_time_lookup.get((driver, lap_number + 1))
         pit_out_s = round(pit_out.total_seconds(), 3) if pit_out is not None else None
 
+        weather = nearest_weather(weather_df, lap["PitInTime"])
+
         records.append({
             "Year":              year,
             "RoundNumber":       round_number,
@@ -86,6 +118,7 @@ def extract_pitstops(session, year: int, event_name: str, round_number: int) -> 
             "PitOutTime_s":      pit_out_s,
             "PositionAtPit":     position_at_pit,
             "FinalPosition":     final_pos,
+            **weather,
         })
 
     return records
@@ -112,8 +145,7 @@ def main():
             print(f"  [{round_num:02d}] {event_name} ...", end=" ", flush=True)
             try:
                 session = fastf1.get_session(year, round_num, "R")
-                # Load only what we need — skip telemetry/weather/messages
-                session.load(telemetry=False, weather=False, messages=False)
+                session.load(telemetry=False, weather=True, messages=False)
 
                 records = extract_pitstops(session, year, event_name, round_num)
                 all_records.extend(records)
